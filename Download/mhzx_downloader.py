@@ -17,7 +17,7 @@ if not os.path.exists(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
 
 
-def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(Exception,)):
+def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(asyncio.TimeoutError, Exception)):
     """异步重试装饰器"""
 
     def decorator(func):
@@ -88,6 +88,17 @@ class DownloaderAsync:
         self.browser = None
         self.context = None
 
+
+        self.image_extensions = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".tiff",
+            ".webp",
+            ".svg",
+        }
         self.links_lock = asyncio.Lock()
 
     async def login_and_save(self, url):
@@ -142,14 +153,7 @@ class DownloaderAsync:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
 
-        self._logger.info("登录状态恢复成功")
-
-    @async_retry(
-        max_retries=3,
-        base_delay=1.0,
-        max_delay=10.0,
-        exceptions=(asyncio.TimeoutError, Exception),
-    )
+    @async_retry()
     async def navigate_with_retry(
         self, page, url, wait_until="domcontentloaded", timeout=30000
     ):
@@ -164,111 +168,77 @@ class DownloaderAsync:
             except Exception as e:
                 self._logger.info(f"关闭页面时出错: {e}")
 
-    async def produce(self):
-        pass
-
-    async def async_run(self):
-        """主运行函数"""
-        self._logger.info("开始运行...")
-        if not os.path.exists(self.storage_state_path):
-            await self.login_and_save("https://www.mhh1.com")
-
-        async with async_playwright() as playwright:
-            self.playwright = playwright
-            await self.fast_login()
-
-            await self.produce()
-
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-
-        self._logger.info("运行结束!")
-
-    def run(self):
+    def load_existing_names(self,file_path):
+        """读取已有文件,避免重复"""
         try:
-            asyncio.run(self.async_run())
-        except KeyboardInterrupt:
-            self._logger.error("用户中断运行!")
-        except Exception as e:
-            self._logger.error(f"运行失败: {e}", exc_info=True)
+            name_set = set()
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
+            for item in data:
+                if name := item.get("name"):
+                    # 去掉 "_部分X" 后缀
+                    import re
+                    cleaned_name = re.sub(r"_部分\d+$", "", name)
 
-class MhzxDownloader(DownloaderAsync):
-
-    _logger = logging.getLogger("MhzxDownloader")
-
-    def __init__(
-        self,
-        headless=True,
-        max_concurrent=5,
-        articles_path=None,
-        pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
-        no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
-    ):
-        super().__init__(
-            headless=headless,
-            max_concurrent=max_concurrent,
-        )
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.articles_path = articles_path
-        self.pan_baidu_path = pan_baidu_path
-        self.no_pan_baidu_path = no_pan_baidu_path
-
-        self.links = []
-        self.pan_baidu_names = set()
-        self.no_pan_baidu_names = set()
-        self.image_extensions = {
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".gif",
-            ".bmp",
-            ".tiff",
-            ".webp",
-            ".svg",
-        }
-
-    def load_existing_names(self):
-        """加载已存在的链接"""
-
-        def _load_file(file_path, name_set):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                for item in data:
-                    if name := item.get("name"):
-                        # 去掉 "_部分X" 后缀
-                        import re
-
-                        # 匹配类似 "_部分1"、"_部分2" 这样的后缀
-                        cleaned_name = re.sub(r"_部分\d+$", "", name)
-                        name_set.add(cleaned_name)
-
-            except:
-                pass
-
-        _load_file(self.pan_baidu_path, self.pan_baidu_names)
-        _load_file(self.no_pan_baidu_path, self.no_pan_baidu_names)
-
+                    name_set.add(cleaned_name)
+            return name_set
+        except:
+            return name_set
+    
+ 
     def is_image_url(self, url: str) -> bool:
         """检查URL是否是图片链接"""
-        if not url:
-            return False
-
-        url_lower = url.lower()
-
-        for ext in self.image_extensions:
-            if ext in url_lower:
-                return True
+        if url:
+            url_lower = url.lower()
+            for ext in self.image_extensions:
+                if ext in url_lower:
+                    return True
         return False
 
     async def decode_qr_async(self, image_url: str) -> Optional[str]:
-        """真正的异步二维码解码"""
+        """异步二维码解码"""
+        def _process_qr_image(img_data: bytes) -> Optional[str]:
+            """处理二维码图像"""
+            try:
+                # 解码图片
+                img = cv2.imdecode(np.frombuffer(img_data, np.uint8), -1)
+
+                if img is None:
+                    self._logger.warning(f"无法解码图片: {image_url}")
+                    return None
+
+                # 使用一行式多策略解码
+                img_gray = (
+                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+                )
+                detector = cv2.QRCodeDetector()
+
+                # 尝试所有预处理组合
+                methods = [
+                    img_gray,
+                    cv2.medianBlur(img_gray, 5),
+                    cv2.adaptiveThreshold(img_gray, 255, 0, 1, 11, 2),
+                    cv2.threshold(cv2.GaussianBlur(img_gray, (5, 5), 0), 0, 255, 0 + 16)[1],
+                    cv2.morphologyEx(img_gray, 2, cv2.getStructuringElement(0, (5, 5))),
+                ]
+
+                for i, proc in enumerate(methods):
+                    try:
+                        data, bbox, _ = detector.detectAndDecode(proc)
+                        if data:
+                            return data
+                    except Exception as e:
+                        self._logger.warning(f"解码方法{i + 1}失败: {e}")
+                        continue
+
+                self._logger.warning(f"所有解码方法均失败: {image_url}")
+                return None
+
+            except Exception as e:
+                self._logger.warning(f"图像处理异常 {image_url}: {e}", exc_info=True)
+                return None
         try:
-            # 使用 aiohttp 异步下载
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as response:
                     if response.status != 200:
@@ -282,7 +252,7 @@ class MhzxDownloader(DownloaderAsync):
             # 在同步代码中处理图像（避免阻塞事件循环）
             loop = asyncio.get_event_loop()
             decoded_result = await loop.run_in_executor(
-                None, self._process_qr_image, img_data, image_url
+                None, _process_qr_image, img_data
             )
 
             return decoded_result
@@ -291,48 +261,63 @@ class MhzxDownloader(DownloaderAsync):
             self._logger.warning(f"二维码解码异常 {image_url}: {e}", exc_info=True)
             return None
 
-    def _process_qr_image(self, img_data: bytes, image_url: str) -> Optional[str]:
-        """处理二维码图像（CPU密集型操作）"""
+    async def produce(self):
+        pass
+
+    async def async_run(self):
+        """主运行函数"""
+        self._logger.info("开始运行...")
+        if not os.path.exists(self.storage_state_path):
+            await self.login_and_save("https://www.mhh1.com")
+
+        async with async_playwright() as playwright:
+            self.playwright = playwright
+            await self.fast_login()
+            
+            # 执行逻辑
+            await self.produce()
+
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+
+        self._logger.info("运行结束!")
+
+    # 外部接口
+    def run(self):
         try:
-            # 解码图片
-            img = cv2.imdecode(np.frombuffer(img_data, np.uint8), -1)
-
-            if img is None:
-                self._logger.warning(f"无法解码图片: {image_url}")
-                return None
-
-            # 使用一行式多策略解码
-            img_gray = (
-                cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-            )
-            detector = cv2.QRCodeDetector()
-
-            # 尝试所有预处理组合
-            methods = [
-                img_gray,
-                cv2.medianBlur(img_gray, 5),
-                cv2.adaptiveThreshold(img_gray, 255, 0, 1, 11, 2),
-                cv2.threshold(cv2.GaussianBlur(img_gray, (5, 5), 0), 0, 255, 0 + 16)[1],
-                cv2.morphologyEx(img_gray, 2, cv2.getStructuringElement(0, (5, 5))),
-            ]
-
-            for i, proc in enumerate(methods):
-                try:
-                    data, bbox, _ = detector.detectAndDecode(proc)
-                    if data:
-                        return data
-                except Exception as e:
-                    self._logger.warning(f"解码方法{i + 1}失败: {e}")
-                    continue
-
-            self._logger.warning(f"所有解码方法均失败: {image_url}")
-            return None
-
+            asyncio.run(self.async_run())
+        except KeyboardInterrupt:
+            self._logger.error("用户中断运行!")
         except Exception as e:
-            self._logger.warning(f"图像处理异常 {image_url}: {e}", exc_info=True)
-            return None
+            self._logger.error(f"运行失败: {e}")
 
-    async def save(self):
+
+class MhzxDownloader(DownloaderAsync):
+
+    _logger = logging.getLogger("MhzxDownloader")
+
+    def __init__(
+        self,
+        headless=True,
+        max_concurrent=5,
+        articles_path="articles.json",
+        pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
+        no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
+    ):
+        super().__init__(
+            headless=headless,
+            max_concurrent=max_concurrent,
+        )
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.articles_path = articles_path
+        self.pan_baidu_path = pan_baidu_path
+        self.no_pan_baidu_path = no_pan_baidu_path
+
+        self.links = []
+
+    def save(self):
         """保存链接到文件"""
         self._logger.info("正在保存链接到文件...")
 
@@ -379,40 +364,43 @@ class MhzxDownloader(DownloaderAsync):
             data = json.load(f)
         total = len(data)
 
-        self._logger.info(f"共发现 {total} 个链接需要处理")
+        self._logger.info(f"共发现 {total} 个链接")
 
-        self.load_existing_names()
+        pan_baidu_names = self.load_existing_names(self.pan_baidu_path)
+        no_pan_baidu_names = self.load_existing_names(self.no_pan_baidu_path)
 
         items_to_process = []
-        for i, item in enumerate(data, 1):
-            name = item.get("name", f"链接{i}")
+        count = 0
+        for item in data:
+            name = item.get("name", "")
             url = item.get("url", "")
-
-            if name in self.pan_baidu_names or name in self.no_pan_baidu_names:
+            if name in pan_baidu_names or name in no_pan_baidu_names:
                 continue
-
-            items_to_process.append((i, total, name, url))
+            count += 1
+            items_to_process.append((count, name, url))
 
         if not items_to_process:
             self._logger.info("所有链接都已处理过,无需处理新链接")
             return
 
-        self._logger.info(f"需要处理 {len(items_to_process)} 个新链接")
+        total=len(items_to_process)
 
-        async def process_with_semaphore(i, total, name, url):
+        self._logger.info(f"需要处理 {total} 个新链接")
+
+        async def process_with_semaphore(count, name, url):
             """带超时和信号量的处理"""
             try:
                 async with asyncio.timeout(120):
                     async with self.semaphore:
-                        await self.process_single(i, total, name, url, retry_count=0)
+                        await self.process_single(count, total, name, url, retry_count=0)
             except asyncio.TimeoutError:
                 self._logger.error(f"任务总超时(120s): {name}")
             except Exception as e:
                 self._logger.error(f"任务异常: {name}: {e}")
 
         tasks = [
-            process_with_semaphore(i, total, name, url)
-            for i, total, name, url in items_to_process
+            process_with_semaphore(count,name, url)
+            for count,name, url in items_to_process
         ]
 
         start_time = time.time()
@@ -430,11 +418,11 @@ class MhzxDownloader(DownloaderAsync):
             f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接,耗时: {elapsed:.1f}s"
         )
 
-        await self.save()
+        self.save()
         save_as_txt(self.pan_baidu_path)
 
     async def process_single(
-        self, i, total, name, article_url, retry_count=0, max_retries=3
+        self, count, total, name, article_url, retry_count=0, max_retries=3
     ):
         """处理单个链接（改进版本，确保资源清理）"""
         page = None
@@ -467,7 +455,7 @@ class MhzxDownloader(DownloaderAsync):
                     # 递归重试前等待一下
                     await asyncio.sleep(2)
                     return await self.process_single(
-                        i, total, name, article_url, retry_count + 1, max_retries
+                        count, total, name, article_url, retry_count + 1, max_retries
                     )
                 else:
                     raise
@@ -532,7 +520,7 @@ class MhzxDownloader(DownloaderAsync):
                                 popup_url = decoded_url
                         except Exception as e:
                             self._logger.warning(
-                                f"[{i}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}"
+                                f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}"
                             )
 
                     all_download_urls.append(popup_url)
@@ -542,7 +530,7 @@ class MhzxDownloader(DownloaderAsync):
 
                 except Exception as e:
                     self._logger.warning(
-                        f"[{i}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}"
+                        f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}"
                     )
                     continue
 
@@ -578,15 +566,15 @@ class MhzxDownloader(DownloaderAsync):
                             }
                         )
                     self._logger.info(
-                        f"[{i}/{total}] {name}: 处理完成, 共获取 {len(all_download_urls)} 个下载链接"
+                        f"[{count}/{total}] {name}: 处理完成, 共获取 {len(all_download_urls)} 个下载链接"
                     )
                 else:
-                    self._logger.info(f"[{i}/{total}] {name}: 没有获取到任何URL")
+                    self._logger.info(f"[{count}/{total}] {name}: 没有获取到任何URL")
 
         except asyncio.TimeoutError:
-            self._logger.info(f"[{i}/{total}] {name}: 超时")
+            self._logger.info(f"[{count}/{total}] {name}: 超时")
         except Exception as e:
-            self._logger.info(f"[{i}/{total}] {name}: 处理失败: {e}", exc_info=True)
+            self._logger.info(f"[{count}/{total}] {name}: 处理失败: {e}", exc_info=True)
         finally:
             # 确保所有页面都被关闭
             await self.safe_close_page(page)
@@ -598,7 +586,7 @@ class MhzxSpider(DownloaderAsync):
     def __init__(
         self,
         headless=True,
-        articles_path=None,
+        articles_path="articles.json",
         article_url=None,
     ):
         super().__init__(
