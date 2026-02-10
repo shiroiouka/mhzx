@@ -44,7 +44,6 @@ def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(async
 
     return decorator
 
-
 def save_as_txt(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -124,7 +123,7 @@ class DownloaderAsync:
             page = await context.new_page()
 
             self._logger.info("请手动登录")
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url)
             self._logger.info("登录完成后按回车保存状态...")
             input()
 
@@ -152,13 +151,6 @@ class DownloaderAsync:
             viewport=ViewportSize(width=1280, height=720),
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
-
-    @async_retry()
-    async def navigate_with_retry(
-        self, page, url, wait_until="domcontentloaded", timeout=30000
-    ):
-        """带重试的页面导航"""
-        await page.goto(url, wait_until=wait_until, timeout=timeout)
 
     async def safe_close_page(self, page: Optional[Page]):
         """安全关闭页面"""
@@ -276,7 +268,7 @@ class DownloaderAsync:
             
             # 执行逻辑
             await self.produce()
-
+            
             if self.context:
                 await self.context.close()
             if self.browser:
@@ -425,8 +417,6 @@ class MhzxDownloader(DownloaderAsync):
         self, count, total, name, article_url, retry_count=0, max_retries=3
     ):
         """处理单个链接（改进版本，确保资源清理）"""
-        page = None
-        new_page = None
         all_download_urls = []
         download_pwd = None
         extract_pwd = None
@@ -436,9 +426,9 @@ class MhzxDownloader(DownloaderAsync):
             page.set_default_timeout(30000)
 
             # 带重试的导航
-            await self.navigate_with_retry(page, article_url)
+            await page.goto(article_url, wait_until="domcontentloaded")
 
-            # 第一次点击 - 改进错误处理
+            # 第一次点击
             try:
                 async with page.expect_popup(timeout=20000) as popup_info:
                     await page.locator(
@@ -588,27 +578,27 @@ class MhzxSpider(DownloaderAsync):
         headless=True,
         articles_path="articles.json",
         article_url=None,
+        keyword = None,
     ):
         super().__init__(
             headless=headless,
         )
         self.articles_path = articles_path
         self.article_url = article_url
+        self.keyword=keyword
 
         self.list = []
 
     async def produce(self):
 
-        page = None
-        new_page = None
-
         page = await self.context.new_page()
         page.set_default_timeout(30000)
 
         # 带重试的导航
-        await self.navigate_with_retry(page, self.article_url)
+        await page.goto(self.article_url, wait_until="domcontentloaded")
+
         await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
-        article_xpath = "//div[1]/article/div/h3/a[contains(text(),'見ず水煮')]"
+        article_xpath = f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
         article_locators = await page.locator(article_xpath).all()
         for i, locator in enumerate(article_locators):
             name = await locator.text_content()
@@ -623,3 +613,5 @@ class MhzxSpider(DownloaderAsync):
             )
         with open(self.articles_path, "w", encoding="utf-8") as f:
             json.dump(self.list, f, ensure_ascii=False, indent=2)
+        
+        await self.safe_close_page(page)
