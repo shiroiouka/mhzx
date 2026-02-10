@@ -1,0 +1,637 @@
+import asyncio
+import json
+import logging
+import os
+import time
+from functools import wraps
+from typing import Optional
+
+import aiohttp
+import cv2
+import numpy as np
+from playwright.async_api import async_playwright, ViewportSize, Page
+
+
+temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+if not os.path.exists(temp_dir):
+    os.makedirs(temp_dir, exist_ok=True)
+
+
+def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(Exception,)):
+    """异步重试装饰器"""
+
+    def decorator(func):
+
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        delay = min(base_delay * (2**attempt), max_delay)
+                        jitter = delay * 0.1
+                        actual_delay = delay + np.random.uniform(-jitter, jitter)
+
+                        await asyncio.sleep(actual_delay)
+                    else:
+                        raise last_exception
+            raise last_exception
+
+        return wrapper
+
+    return decorator
+
+
+def save_as_txt(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    url_list = []
+    extract_pwd = set()
+    url_path = f"{temp_dir}\\pan_baidu.txt"
+    pwd_path = r"E:\BaiduNetdiskDownload\password.txt"
+
+    for i in data:
+        url_list.append(i["download_url"])
+        extract_pwd.add(i["extract_pwd"])
+        if url_list:
+            with open(url_path, "w", encoding="utf-8") as f:
+                for url in url_list:
+                    f.write(url + "\n")
+            with open(pwd_path, "w", encoding="utf-8") as f:
+                for pwd in extract_pwd:
+                    f.write(pwd + "\n")
+
+
+class DownloaderAsync:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(name)s - %(message)s",
+        # datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    _logger = logging.getLogger("DownloaderAsync")
+
+    def __init__(
+        self,
+        headless=True,
+        max_concurrent=5,
+        storage_state_path=os.path.join(temp_dir, "storage_state.json"),
+    ):
+        self.headless = headless
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.storage_state_path = storage_state_path
+
+        self.playwright = None
+        self.browser = None
+        self.context = None
+
+        self.links_lock = asyncio.Lock()
+
+    async def login_and_save(self, url):
+        """首次登录并保存状态"""
+        self._logger.info("第一次登录并保存状态...")
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=False,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+
+            context = await browser.new_context(
+                viewport=ViewportSize(width=1280, height=720),
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
+
+            page = await context.new_page()
+
+            self._logger.info("请手动登录")
+            await page.goto(url, wait_until="domcontentloaded")
+            self._logger.info("登录完成后按回车保存状态...")
+            input()
+
+            await context.storage_state(path=self.storage_state_path)
+
+            await page.close()
+            await context.close()
+            await browser.close()
+
+    async def fast_login(self):
+        """快速恢复登录状态"""
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-images",  # 禁用所有图片加载
+            ],
+        )
+
+        self.context = await self.browser.new_context(
+            storage_state=self.storage_state_path,
+            viewport=ViewportSize(width=1280, height=720),
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+
+        self._logger.info("登录状态恢复成功")
+
+    @async_retry(
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=10.0,
+        exceptions=(asyncio.TimeoutError, Exception),
+    )
+    async def navigate_with_retry(
+        self, page, url, wait_until="domcontentloaded", timeout=30000
+    ):
+        """带重试的页面导航"""
+        await page.goto(url, wait_until=wait_until, timeout=timeout)
+
+    async def safe_close_page(self, page: Optional[Page]):
+        """安全关闭页面"""
+        if page and not page.is_closed():
+            try:
+                await page.close()
+            except Exception as e:
+                self._logger.info(f"关闭页面时出错: {e}")
+
+    async def produce(self):
+        pass
+
+    async def async_run(self):
+        """主运行函数"""
+        self._logger.info("开始运行...")
+        if not os.path.exists(self.storage_state_path):
+            await self.login_and_save("https://www.mhh1.com")
+
+        async with async_playwright() as playwright:
+            self.playwright = playwright
+            await self.fast_login()
+
+            await self.produce()
+
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+
+        self._logger.info("运行结束!")
+
+    def run(self):
+        try:
+            asyncio.run(self.async_run())
+        except KeyboardInterrupt:
+            self._logger.error("用户中断运行!")
+        except Exception as e:
+            self._logger.error(f"运行失败: {e}", exc_info=True)
+
+
+class MhzxDownloader(DownloaderAsync):
+
+    _logger = logging.getLogger("MhzxDownloader")
+
+    def __init__(
+        self,
+        headless=True,
+        max_concurrent=5,
+        articles_path=None,
+        pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
+        no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
+    ):
+        super().__init__(
+            headless=headless,
+            max_concurrent=max_concurrent,
+        )
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.articles_path = articles_path
+        self.pan_baidu_path = pan_baidu_path
+        self.no_pan_baidu_path = no_pan_baidu_path
+
+        self.links = []
+        self.pan_baidu_names = set()
+        self.no_pan_baidu_names = set()
+        self.image_extensions = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".tiff",
+            ".webp",
+            ".svg",
+        }
+
+    def load_existing_names(self):
+        """加载已存在的链接"""
+
+        def _load_file(file_path, name_set):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                for item in data:
+                    if name := item.get("name"):
+                        # 去掉 "_部分X" 后缀
+                        import re
+
+                        # 匹配类似 "_部分1"、"_部分2" 这样的后缀
+                        cleaned_name = re.sub(r"_部分\d+$", "", name)
+                        name_set.add(cleaned_name)
+
+            except:
+                pass
+
+        _load_file(self.pan_baidu_path, self.pan_baidu_names)
+        _load_file(self.no_pan_baidu_path, self.no_pan_baidu_names)
+
+    def is_image_url(self, url: str) -> bool:
+        """检查URL是否是图片链接"""
+        if not url:
+            return False
+
+        url_lower = url.lower()
+
+        for ext in self.image_extensions:
+            if ext in url_lower:
+                return True
+        return False
+
+    async def decode_qr_async(self, image_url: str) -> Optional[str]:
+        """真正的异步二维码解码"""
+        try:
+            # 使用 aiohttp 异步下载
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as response:
+                    if response.status != 200:
+                        self._logger.warning(
+                            f"下载失败: {image_url}, 状态码: {response.status}"
+                        )
+                        return None
+
+                    img_data = await response.read()
+
+            # 在同步代码中处理图像（避免阻塞事件循环）
+            loop = asyncio.get_event_loop()
+            decoded_result = await loop.run_in_executor(
+                None, self._process_qr_image, img_data, image_url
+            )
+
+            return decoded_result
+
+        except Exception as e:
+            self._logger.warning(f"二维码解码异常 {image_url}: {e}", exc_info=True)
+            return None
+
+    def _process_qr_image(self, img_data: bytes, image_url: str) -> Optional[str]:
+        """处理二维码图像（CPU密集型操作）"""
+        try:
+            # 解码图片
+            img = cv2.imdecode(np.frombuffer(img_data, np.uint8), -1)
+
+            if img is None:
+                self._logger.warning(f"无法解码图片: {image_url}")
+                return None
+
+            # 使用一行式多策略解码
+            img_gray = (
+                cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            )
+            detector = cv2.QRCodeDetector()
+
+            # 尝试所有预处理组合
+            methods = [
+                img_gray,
+                cv2.medianBlur(img_gray, 5),
+                cv2.adaptiveThreshold(img_gray, 255, 0, 1, 11, 2),
+                cv2.threshold(cv2.GaussianBlur(img_gray, (5, 5), 0), 0, 255, 0 + 16)[1],
+                cv2.morphologyEx(img_gray, 2, cv2.getStructuringElement(0, (5, 5))),
+            ]
+
+            for i, proc in enumerate(methods):
+                try:
+                    data, bbox, _ = detector.detectAndDecode(proc)
+                    if data:
+                        return data
+                except Exception as e:
+                    self._logger.warning(f"解码方法{i + 1}失败: {e}")
+                    continue
+
+            self._logger.warning(f"所有解码方法均失败: {image_url}")
+            return None
+
+        except Exception as e:
+            self._logger.warning(f"图像处理异常 {image_url}: {e}", exc_info=True)
+            return None
+
+    async def save(self):
+        """保存链接到文件"""
+        self._logger.info("正在保存链接到文件...")
+
+        def _load_existing_json(file_path):
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            return []
+
+        def _save_file(file_path, data):
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+        if self.links:
+            links_pan_baidu = []
+            links_no_pan_baidu = []
+
+            for link in self.links:
+                if "pan.baidu.com" in link.get("download_url"):
+                    links_pan_baidu.append(link)
+                else:
+                    links_no_pan_baidu.append(link)
+
+            pan_baidu_json = _load_existing_json(self.pan_baidu_path)
+            no_pan_baidu_json = _load_existing_json(self.no_pan_baidu_path)
+
+            pan_baidu_links = pan_baidu_json + links_pan_baidu
+            no_pan_baidu_links = no_pan_baidu_json + links_no_pan_baidu
+
+            _save_file(self.pan_baidu_path, pan_baidu_links)
+            _save_file(self.no_pan_baidu_path, no_pan_baidu_links)
+
+            self._logger.info(
+                f"{self.pan_baidu_path} 新增 {len(links_pan_baidu)} 条,总计 {len(pan_baidu_links)} 条"
+            )
+            self._logger.info(
+                f"{self.no_pan_baidu_path} 新增 {len(links_no_pan_baidu)} 条,总计 {len(no_pan_baidu_links)} 条"
+            )
+        else:
+            self._logger.warning("没有新的链接保存")
+
+    async def produce(self):
+        with open(self.articles_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        total = len(data)
+
+        self._logger.info(f"共发现 {total} 个链接需要处理")
+
+        self.load_existing_names()
+
+        items_to_process = []
+        for i, item in enumerate(data, 1):
+            name = item.get("name", f"链接{i}")
+            url = item.get("url", "")
+
+            if name in self.pan_baidu_names or name in self.no_pan_baidu_names:
+                continue
+
+            items_to_process.append((i, total, name, url))
+
+        if not items_to_process:
+            self._logger.info("所有链接都已处理过,无需处理新链接")
+            return
+
+        self._logger.info(f"需要处理 {len(items_to_process)} 个新链接")
+
+        async def process_with_semaphore(i, total, name, url):
+            """带超时和信号量的处理"""
+            try:
+                async with asyncio.timeout(120):
+                    async with self.semaphore:
+                        await self.process_single(i, total, name, url, retry_count=0)
+            except asyncio.TimeoutError:
+                self._logger.error(f"任务总超时(120s): {name}")
+            except Exception as e:
+                self._logger.error(f"任务异常: {name}: {e}")
+
+        tasks = [
+            process_with_semaphore(i, total, name, url)
+            for i, total, name, url in items_to_process
+        ]
+
+        start_time = time.time()
+
+        # 使用 gather 替代 as_completed，更好的错误处理
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 检查是否有未捕获的异常
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                self._logger.error(f"任务 {idx} 发生未捕获异常: {result}")
+
+        elapsed = time.time() - start_time
+        self._logger.info(
+            f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接,耗时: {elapsed:.1f}s"
+        )
+
+        await self.save()
+        save_as_txt(self.pan_baidu_path)
+
+    async def process_single(
+        self, i, total, name, article_url, retry_count=0, max_retries=3
+    ):
+        """处理单个链接（改进版本，确保资源清理）"""
+        page = None
+        new_page = None
+        all_download_urls = []
+        download_pwd = None
+        extract_pwd = None
+
+        try:
+            page = await self.context.new_page()
+            page.set_default_timeout(30000)
+
+            # 带重试的导航
+            await self.navigate_with_retry(page, article_url)
+
+            # 第一次点击 - 改进错误处理
+            try:
+                async with page.expect_popup(timeout=20000) as popup_info:
+                    await page.locator(
+                        "#inn-singular__post__toolbar > a:nth-child(2) > span.poi-icon__text"
+                    ).click(timeout=20000)
+                new_page = await popup_info.value
+                await new_page.wait_for_load_state("domcontentloaded", timeout=20000)
+            except:
+                # 确保清理所有已创建的页面
+                await self.safe_close_page(page)
+                await self.safe_close_page(new_page)
+
+                if retry_count < max_retries:
+                    # 递归重试前等待一下
+                    await asyncio.sleep(2)
+                    return await self.process_single(
+                        i, total, name, article_url, retry_count + 1, max_retries
+                    )
+                else:
+                    raise
+
+            # 切换到新页面
+            await self.safe_close_page(page)
+            page = new_page
+
+            # 获取密码信息
+            download_pwd_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__item__download-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
+            extract_pwd_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__item__extract-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
+
+            try:
+                await page.wait_for_selector(
+                    "#inn-download-page__content", timeout=5000
+                )
+
+                try:
+                    download_pwd_input = await page.wait_for_selector(
+                        download_pwd_selector, state="attached", timeout=3000
+                    )
+                    if download_pwd_input:
+                        download_pwd = await download_pwd_input.get_attribute("value")
+                except:
+                    pass
+
+                try:
+                    extract_pwd_input = await page.wait_for_selector(
+                        extract_pwd_selector, state="attached", timeout=3000
+                    )
+                    if extract_pwd_input:
+                        extract_pwd = await extract_pwd_input.get_attribute("value")
+                except:
+                    pass
+            except:
+                pass
+
+            # 查找所有下载按钮
+            download_buttons_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__btn > div > a:nth-child(1) > span.poi-icon__text"
+            download_buttons = await page.query_selector_all(download_buttons_selector)
+
+            # 遍历并点击所有下载按钮
+            for btn_index, button in enumerate(download_buttons):
+                try:
+                    # 等待新页面弹出
+                    async with page.expect_popup(timeout=20000) as popup_info:
+                        await button.click(timeout=20000)
+
+                    new_popup_page = await popup_info.value
+                    await new_popup_page.wait_for_load_state(
+                        "domcontentloaded", timeout=20000
+                    )
+
+                    # 获取新页面的URL
+                    popup_url = new_popup_page.url
+
+                    # 处理二维码（如果需要）
+                    if self.is_image_url(popup_url):
+                        try:
+                            decoded_url = await self.decode_qr_async(popup_url)
+                            if decoded_url:
+                                popup_url = decoded_url
+                        except Exception as e:
+                            self._logger.warning(
+                                f"[{i}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}"
+                            )
+
+                    all_download_urls.append(popup_url)
+
+                    # 关闭弹出页面
+                    await self.safe_close_page(new_popup_page)
+
+                except Exception as e:
+                    self._logger.warning(
+                        f"[{i}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}"
+                    )
+                    continue
+
+            # 关闭主页面
+            await self.safe_close_page(page)
+            page = None
+
+            # 保存结果
+            async with self.links_lock:
+                if all_download_urls:
+                    # 对于每个获取到的URL，创建单独的记录
+                    for url_index, download_url in enumerate(all_download_urls):
+                        # 为每个URL创建唯一名称
+                        url_name = name
+                        if len(all_download_urls) > 1:
+                            url_name = f"{name}_部分{url_index + 1}"
+
+                        # 如果是百度网盘链接，添加密码
+                        if (
+                            "pan.baidu.com" in download_url
+                            and "?pwd=" not in download_url
+                            and download_pwd
+                        ):
+                            download_url = f"{download_url}?pwd={download_pwd}"
+
+                        self.links.append(
+                            {
+                                "name": url_name,
+                                "article_url": article_url,
+                                "download_url": download_url,
+                                "download_pwd": download_pwd,
+                                "extract_pwd": extract_pwd,
+                            }
+                        )
+                    self._logger.info(
+                        f"[{i}/{total}] {name}: 处理完成, 共获取 {len(all_download_urls)} 个下载链接"
+                    )
+                else:
+                    self._logger.info(f"[{i}/{total}] {name}: 没有获取到任何URL")
+
+        except asyncio.TimeoutError:
+            self._logger.info(f"[{i}/{total}] {name}: 超时")
+        except Exception as e:
+            self._logger.info(f"[{i}/{total}] {name}: 处理失败: {e}", exc_info=True)
+        finally:
+            # 确保所有页面都被关闭
+            await self.safe_close_page(page)
+
+
+class MhzxSpider(DownloaderAsync):
+    _logger = logging.getLogger("MhzxSpider")
+
+    def __init__(
+        self,
+        headless=True,
+        articles_path=None,
+        article_url=None,
+    ):
+        super().__init__(
+            headless=headless,
+        )
+        self.articles_path = articles_path
+        self.article_url = article_url
+
+        self.list = []
+
+    async def produce(self):
+
+        page = None
+        new_page = None
+
+        page = await self.context.new_page()
+        page.set_default_timeout(30000)
+
+        # 带重试的导航
+        await self.navigate_with_retry(page, self.article_url)
+        await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
+        article_xpath = "//div[1]/article/div/h3/a[contains(text(),'見ず水煮')]"
+        article_locators = await page.locator(article_xpath).all()
+        for i, locator in enumerate(article_locators):
+            name = await locator.text_content()
+            name = name.strip()
+            url = await locator.get_attribute("href")
+
+            self.list.append(
+                {
+                    "name": name,
+                    "url": url,
+                }
+            )
+        with open(self.articles_path, "w", encoding="utf-8") as f:
+            json.dump(self.list, f, ensure_ascii=False, indent=2)
