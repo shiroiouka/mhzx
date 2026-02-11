@@ -16,7 +16,12 @@ if not os.path.exists(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
 
 
-def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(asyncio.TimeoutError, Exception)):
+def async_retry(
+    max_retries=3,
+    base_delay=1.0,
+    max_delay=10.0,
+    exceptions=(asyncio.TimeoutError, Exception),
+):
     """异步重试装饰器"""
 
     def decorator(func):
@@ -30,7 +35,7 @@ def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(async
                 except exceptions as e:
                     last_exception = e
                     if attempt < max_retries - 1:
-                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        delay = min(base_delay * (2**attempt), max_delay)
                         jitter = delay * 0.1
                         actual_delay = delay + np.random.uniform(-jitter, jitter)
 
@@ -79,10 +84,10 @@ class DownloaderAsync:
     _logger = Log("DownloaderAsync").log()
 
     def __init__(
-            self,
-            headless=True,
-            max_concurrent=5,
-            storage_state_path=os.path.join(temp_dir, "storage_state.json"),
+        self,
+        headless=True,
+        max_concurrent=5,
+        storage_state_path=os.path.join(temp_dir, "storage_state.json"),
     ):
         self.headless = headless
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -175,6 +180,7 @@ class DownloaderAsync:
                 if name := item.get("name"):
                     # 去掉 "_部分X" 后缀
                     import re
+
                     cleaned_name = re.sub(r"_部分\d+$", "", name)
 
                     name_set.add(cleaned_name)
@@ -206,7 +212,9 @@ class DownloaderAsync:
 
                 # 使用一行式多策略解码
                 img_gray = (
-                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    if len(img.shape) == 3
+                    else img
                 )
                 detector = cv2.QRCodeDetector()
 
@@ -215,7 +223,9 @@ class DownloaderAsync:
                     img_gray,
                     cv2.medianBlur(img_gray, 5),
                     cv2.adaptiveThreshold(img_gray, 255, 0, 1, 11, 2),
-                    cv2.threshold(cv2.GaussianBlur(img_gray, (5, 5), 0), 0, 255, 0 + 16)[1],
+                    cv2.threshold(
+                        cv2.GaussianBlur(img_gray, (5, 5), 0), 0, 255, 0 + 16
+                    )[1],
                     cv2.morphologyEx(img_gray, 2, cv2.getStructuringElement(0, (5, 5))),
                 ]
 
@@ -295,12 +305,12 @@ class MhzxDownloader(DownloaderAsync):
     _logger = Log("MhzxDownloader").log()
 
     def __init__(
-            self,
-            headless=True,
-            max_concurrent=5,
-            articles_path="articles.json",
-            pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
-            no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
+        self,
+        headless=True,
+        max_concurrent=5,
+        articles_path="articles.json",
+        pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
+        no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
     ):
         super().__init__(
             headless=headless,
@@ -385,7 +395,9 @@ class MhzxDownloader(DownloaderAsync):
                 try:
                     async with asyncio.timeout(120):
                         async with self.semaphore:
-                            await self.process_single(count, total, name, url, retry_count=0)
+                            await self.process_single(
+                                count, total, name, url, retry_count=0
+                            )
                 except asyncio.TimeoutError:
                     self._logger.error(f"任务总超时(120s): {name}")
                 except Exception as e:
@@ -416,7 +428,7 @@ class MhzxDownloader(DownloaderAsync):
         save_as_txt(self.pan_baidu_path)
 
     async def process_single(
-            self, count, total, name, article_url, retry_count=0, max_retries=3
+        self, count, total, name, article_url, retry_count=0, max_retries=3
     ):
         """处理单个链接（改进版本，确保资源清理）"""
         all_download_urls = []
@@ -512,7 +524,8 @@ class MhzxDownloader(DownloaderAsync):
                                 popup_url = decoded_url
                         except Exception as e:
                             self._logger.warning(
-                                f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}", exc_info=True
+                                f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}",
+                                exc_info=True,
                             )
 
                     all_download_urls.append(popup_url)
@@ -522,7 +535,8 @@ class MhzxDownloader(DownloaderAsync):
 
                 except Exception as e:
                     self._logger.warning(
-                        f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}", exc_info=True
+                        f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}",
+                        exc_info=True,
                     )
                     continue
 
@@ -542,9 +556,9 @@ class MhzxDownloader(DownloaderAsync):
 
                         # 如果是百度网盘链接，添加密码
                         if (
-                                "pan.baidu.com" in download_url
-                                and "?pwd=" not in download_url
-                                and download_pwd
+                            "pan.baidu.com" in download_url
+                            and "?pwd=" not in download_url
+                            and download_pwd
                         ):
                             download_url = f"{download_url}?pwd={download_pwd}"
 
@@ -576,11 +590,11 @@ class MhzxSpider(DownloaderAsync):
     _logger = Log("MhzxSpider").log()
 
     def __init__(
-            self,
-            headless=True,
-            articles_path="articles.json",
-            article_url=None,
-            keyword=None,
+        self,
+        headless=True,
+        articles_path="articles.json",
+        article_url=None,
+        keyword=None,
     ):
         super().__init__(
             headless=headless,
@@ -600,7 +614,9 @@ class MhzxSpider(DownloaderAsync):
 
         try:
             await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
-            article_xpath = f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
+            article_xpath = (
+                f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
+            )
             article_locators = await page.locator(article_xpath).all()
             for i, locator in enumerate(article_locators):
                 name = await locator.text_content()
