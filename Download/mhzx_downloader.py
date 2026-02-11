@@ -86,11 +86,9 @@ class DownloaderAsync:
     def __init__(
         self,
         headless=True,
-        max_concurrent=5,
         storage_state_path=os.path.join(temp_dir, "storage_state.json"),
     ):
         self.headless = headless
-        self.semaphore = asyncio.Semaphore(max_concurrent)
         self.storage_state_path = storage_state_path
 
         self.playwright = None
@@ -307,14 +305,13 @@ class MhzxDownloader(DownloaderAsync):
     def __init__(
         self,
         headless=True,
-        max_concurrent=5,
+        max_concurrent=3,
         articles_path="articles.json",
         pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
         no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
     ):
         super().__init__(
             headless=headless,
-            max_concurrent=max_concurrent,
         )
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.articles_path = articles_path
@@ -437,19 +434,17 @@ class MhzxDownloader(DownloaderAsync):
 
         try:
             page = await self.context.new_page()
-            page.set_default_timeout(30000)
 
             # 带重试的导航
             await page.goto(article_url, wait_until="domcontentloaded")
 
             # 第一次点击
             try:
-                async with page.expect_popup(timeout=20000) as popup_info:
-                    await page.locator(
-                        "#inn-singular__post__toolbar > a:nth-child(2) > span.poi-icon__text"
-                    ).click(timeout=20000)
+                async with page.expect_popup(timeout=40000) as popup_info:
+                    download_selector = "span:has-text('下载')"
+                    await page.click(download_selector)
                 new_page = await popup_info.value
-                await new_page.wait_for_load_state("domcontentloaded", timeout=20000)
+                await new_page.wait_for_load_state("domcontentloaded")
             except:
                 # 确保清理所有已创建的页面
                 await self.safe_close_page(page)
@@ -469,49 +464,41 @@ class MhzxDownloader(DownloaderAsync):
             page = new_page
 
             # 获取密码信息
-            download_pwd_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__item__download-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
-            extract_pwd_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__item__extract-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
+            download_pwd_selector = "div.inn-download-page__content__item__download-pwd"
+            extract_pwd_selector = "div.inn-download-page__content__item__extract-pwd"
+
 
             try:
-                await page.wait_for_selector(
-                    "#inn-download-page__content", timeout=5000
+                download_pwd_input = await page.wait_for_selector(
+                    download_pwd_selector, state="attached", timeout=3000
                 )
+                if download_pwd_input:
+                    download_pwd = await download_pwd_input.get_attribute("value")
+            except:
+                pass
 
-                try:
-                    download_pwd_input = await page.wait_for_selector(
-                        download_pwd_selector, state="attached", timeout=3000
-                    )
-                    if download_pwd_input:
-                        download_pwd = await download_pwd_input.get_attribute("value")
-                except:
-                    pass
-
-                try:
-                    extract_pwd_input = await page.wait_for_selector(
-                        extract_pwd_selector, state="attached", timeout=3000
-                    )
-                    if extract_pwd_input:
-                        extract_pwd = await extract_pwd_input.get_attribute("value")
-                except:
-                    pass
+            try:
+                extract_pwd_input = await page.wait_for_selector(
+                    extract_pwd_selector, state="attached", timeout=3000
+                )
+                if extract_pwd_input:
+                    extract_pwd = await extract_pwd_input.get_attribute("value")
             except:
                 pass
 
             # 查找所有下载按钮
-            download_buttons_selector = "#inn-download-page__content > fieldset > div.inn-download-page__content__btn > div > a:nth-child(1) > span.poi-icon__text"
-            download_buttons = await page.query_selector_all(download_buttons_selector)
+            download_buttons_selector = "span:has-text('下载')"
+            download_buttons = await page.locator(download_buttons_selector).all()
 
             # 遍历并点击所有下载按钮
             for btn_index, button in enumerate(download_buttons):
                 try:
                     # 等待新页面弹出
-                    async with page.expect_popup(timeout=20000) as popup_info:
-                        await button.click(timeout=20000)
+                    async with page.expect_popup(timeout=40000) as popup_info:
+                        await button.click()
 
                     new_popup_page = await popup_info.value
-                    await new_popup_page.wait_for_load_state(
-                        "domcontentloaded", timeout=20000
-                    )
+                    await new_popup_page.wait_for_load_state("domcontentloaded")
 
                     # 获取新页面的URL
                     popup_url = new_popup_page.url
@@ -593,42 +580,67 @@ class MhzxSpider(DownloaderAsync):
         self,
         headless=True,
         articles_path="articles.json",
-        article_url=None,
         keyword=None,
     ):
         super().__init__(
             headless=headless,
         )
         self.articles_path = articles_path
-        self.article_url = article_url
         self.keyword = keyword
 
         self.list = []
 
     async def produce(self):
         page = await self.context.new_page()
-        page.set_default_timeout(30000)
 
         # 带重试的导航
-        await page.goto(self.article_url, wait_until="domcontentloaded")
-
+        url = r"https://www.mhh1.com/"
+        await page.goto(url, wait_until="domcontentloaded")
         try:
-            await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
-            article_xpath = (
-                f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
-            )
-            article_locators = await page.locator(article_xpath).all()
-            for i, locator in enumerate(article_locators):
-                name = await locator.text_content()
-                name = name.strip()
-                url = await locator.get_attribute("href")
+            search_selector = "a[title*='经典搜索']"
+            await page.click(search_selector)
+            input_xpath = r"xpath=//html/body/div[14]/div/div[2]/div/form/input[1]"
+            await page.fill(input_xpath, self.keyword)
+            await page.press(input_xpath, "Enter")
+            article_selector = f'a[title*="{self.keyword}"]'
+            next_page_selector = "a[title*='下一页']"
+            page_num = 0
 
-                self.list.append(
-                    {
-                        "name": name,
-                        "url": url,
-                    }
-                )
+            while page_num<5:
+                page_num += 1
+                # 等待当前页文章加载
+                await page.wait_for_selector(article_selector, timeout=10000)
+
+                # 获取当前页文章
+                articles = await page.locator(article_selector).all()
+                art_list=[]
+                for article in articles:
+                    name = (await article.text_content() or "").strip()
+                    url = await article.get_attribute("href")
+                    art_list.append({"name": name, "url": url})
+
+                self._logger.info(f"第 {page_num} 页: 收集 {len(art_list)} 个文章")
+                self.list += art_list
+
+                # 检查是否有下一页
+                next_exists = await page.locator(next_page_selector).count()
+                if next_exists == 0:
+                    break
+
+                # 检查下一页是否可用
+                next_button = page.locator(next_page_selector)
+                is_disabled = await next_button.get_attribute("disabled")
+                if is_disabled:
+                    break
+
+                # 点击下一页
+                await next_button.click()
+
+                # 等待新内容加载
+                await page.wait_for_timeout(2000)  # 简单等待
+
+            self._logger.info(f"翻页完成，共 {page_num} 页，{len(self.list)} 个文章")
+
             with open(self.articles_path, "w", encoding="utf-8") as f:
                 json.dump(self.list, f, ensure_ascii=False, indent=2)
 
@@ -653,6 +665,8 @@ def save_as_txt(path):
             with open(url_path, "w", encoding="utf-8") as f:
                 for url in url_list:
                     f.write(url + "\n")
+        if extract_pwd:
             with open(pwd_path, "w", encoding="utf-8") as f:
                 for pwd in extract_pwd:
-                    f.write(pwd + "\n")
+                    if pwd:
+                        f.write(pwd + "\n")
