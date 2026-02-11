@@ -390,13 +390,13 @@ class MhzxDownloader(DownloaderAsync):
             async def process_with_semaphore(count, name, url):
                 """带超时和信号量的处理"""
                 try:
-                    async with asyncio.timeout(120):
+                    async with asyncio.timeout(None):
                         async with self.semaphore:
                             await self.process_single(
                                 count, total, name, url, retry_count=0
                             )
                 except asyncio.TimeoutError:
-                    self._logger.error(f"任务总超时(120s): {name}")
+                    self._logger.error(f"任务总超时(300s): {name}")
                 except Exception as e:
                     self._logger.error(f"任务异常: {name}: {e}", exc_info=True)
 
