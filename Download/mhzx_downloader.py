@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 from playwright.async_api import async_playwright, ViewportSize, Page
 
-
 temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
 if not os.path.exists(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
@@ -31,7 +30,7 @@ def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(async
                 except exceptions as e:
                     last_exception = e
                     if attempt < max_retries - 1:
-                        delay = min(base_delay * (2**attempt), max_delay)
+                        delay = min(base_delay * (2 ** attempt), max_delay)
                         jitter = delay * 0.1
                         actual_delay = delay + np.random.uniform(-jitter, jitter)
 
@@ -44,40 +43,46 @@ def async_retry(max_retries=3, base_delay=1.0, max_delay=10.0, exceptions=(async
 
     return decorator
 
-def save_as_txt(path):
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
 
-    url_list = []
-    extract_pwd = set()
-    url_path = f"{temp_dir}\\pan_baidu.txt"
-    pwd_path = r"E:\BaiduNetdiskDownload\password.txt"
+class Log:
+    def __init__(self, name="logger", is_log=False):
 
-    for i in data:
-        url_list.append(i["download_url"])
-        extract_pwd.add(i["extract_pwd"])
-        if url_list:
-            with open(url_path, "w", encoding="utf-8") as f:
-                for url in url_list:
-                    f.write(url + "\n")
-            with open(pwd_path, "w", encoding="utf-8") as f:
-                for pwd in extract_pwd:
-                    f.write(pwd + "\n")
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.DEBUG)
+
+        if not self.logger.handlers:
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            if is_log:
+                file_handler = logging.FileHandler(name + ".log")
+                file_handler.setLevel(logging.DEBUG)
+                file_handler.setFormatter(formatter)
+                self.logger.addHandler(file_handler)
+
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
+    def cleanup(self):
+        """关闭所有handler"""
+        for handler in self.logger.handlers[:]:
+            handler.close()
+            self.logger.removeHandler(handler)
+
+    def log(self):
+        return self.logger
 
 
 class DownloaderAsync:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(name)s - %(message)s",
-        # datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    _logger = logging.getLogger("DownloaderAsync")
+    _logger = Log("DownloaderAsync").log()
 
     def __init__(
-        self,
-        headless=True,
-        max_concurrent=5,
-        storage_state_path=os.path.join(temp_dir, "storage_state.json"),
+            self,
+            headless=True,
+            max_concurrent=5,
+            storage_state_path=os.path.join(temp_dir, "storage_state.json"),
     ):
         self.headless = headless
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -86,7 +91,6 @@ class DownloaderAsync:
         self.playwright = None
         self.browser = None
         self.context = None
-
 
         self.image_extensions = {
             ".jpg",
@@ -123,7 +127,7 @@ class DownloaderAsync:
             page = await context.new_page()
 
             self._logger.info("请手动登录")
-            await page.goto(url)
+            await page.goto(url, wait_until="domcontentloaded")
             self._logger.info("登录完成后按回车保存状态...")
             input()
 
@@ -158,9 +162,9 @@ class DownloaderAsync:
             try:
                 await page.close()
             except Exception as e:
-                self._logger.info(f"关闭页面时出错: {e}")
+                self._logger.info(f"关闭页面时出错: {e}", exc_info=True)
 
-    def load_existing_names(self,file_path):
+    def load_existing_names(self, file_path):
         """读取已有文件,避免重复"""
         try:
             name_set = set()
@@ -177,8 +181,7 @@ class DownloaderAsync:
             return name_set
         except:
             return name_set
-    
- 
+
     def is_image_url(self, url: str) -> bool:
         """检查URL是否是图片链接"""
         if url:
@@ -190,6 +193,7 @@ class DownloaderAsync:
 
     async def decode_qr_async(self, image_url: str) -> Optional[str]:
         """异步二维码解码"""
+
         def _process_qr_image(img_data: bytes) -> Optional[str]:
             """处理二维码图像"""
             try:
@@ -221,7 +225,7 @@ class DownloaderAsync:
                         if data:
                             return data
                     except Exception as e:
-                        self._logger.warning(f"解码方法{i + 1}失败: {e}")
+                        self._logger.warning(f"解码方法{i + 1}失败: {e}", exc_info=True)
                         continue
 
                 self._logger.warning(f"所有解码方法均失败: {image_url}")
@@ -230,6 +234,7 @@ class DownloaderAsync:
             except Exception as e:
                 self._logger.warning(f"图像处理异常 {image_url}: {e}", exc_info=True)
                 return None
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as response:
@@ -265,10 +270,10 @@ class DownloaderAsync:
         async with async_playwright() as playwright:
             self.playwright = playwright
             await self.fast_login()
-            
+
             # 执行逻辑
             await self.produce()
-            
+
             if self.context:
                 await self.context.close()
             if self.browser:
@@ -283,20 +288,19 @@ class DownloaderAsync:
         except KeyboardInterrupt:
             self._logger.error("用户中断运行!")
         except Exception as e:
-            self._logger.error(f"运行失败: {e}")
+            self._logger.error(f"运行失败: {e}", exc_info=True)
 
 
 class MhzxDownloader(DownloaderAsync):
-
-    _logger = logging.getLogger("MhzxDownloader")
+    _logger = Log("MhzxDownloader").log()
 
     def __init__(
-        self,
-        headless=True,
-        max_concurrent=5,
-        articles_path="articles.json",
-        pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
-        no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
+            self,
+            headless=True,
+            max_concurrent=5,
+            articles_path="articles.json",
+            pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
+            no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
     ):
         super().__init__(
             headless=headless,
@@ -371,50 +375,48 @@ class MhzxDownloader(DownloaderAsync):
             count += 1
             items_to_process.append((count, name, url))
 
-        if not items_to_process:
+        if items_to_process:
+            total = len(items_to_process)
+
+            self._logger.info(f"需要处理 {total} 个新链接")
+
+            async def process_with_semaphore(count, name, url):
+                """带超时和信号量的处理"""
+                try:
+                    async with asyncio.timeout(120):
+                        async with self.semaphore:
+                            await self.process_single(count, total, name, url, retry_count=0)
+                except asyncio.TimeoutError:
+                    self._logger.error(f"任务总超时(120s): {name}")
+                except Exception as e:
+                    self._logger.error(f"任务异常: {name}: {e}", exc_info=True)
+
+            tasks = [
+                process_with_semaphore(count, name, url)
+                for count, name, url in items_to_process
+            ]
+
+            start_time = time.time()
+
+            # 使用 gather 替代 as_completed，更好的错误处理
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 检查是否有未捕获的异常
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self._logger.error(f"任务 {idx} 发生未捕获异常: {result}")
+
+            elapsed = time.time() - start_time
+            self._logger.info(
+                f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接,耗时: {elapsed:.1f}s"
+            )
+        else:
             self._logger.info("所有链接都已处理过,无需处理新链接")
-            return
-
-        total=len(items_to_process)
-
-        self._logger.info(f"需要处理 {total} 个新链接")
-
-        async def process_with_semaphore(count, name, url):
-            """带超时和信号量的处理"""
-            try:
-                async with asyncio.timeout(120):
-                    async with self.semaphore:
-                        await self.process_single(count, total, name, url, retry_count=0)
-            except asyncio.TimeoutError:
-                self._logger.error(f"任务总超时(120s): {name}")
-            except Exception as e:
-                self._logger.error(f"任务异常: {name}: {e}")
-
-        tasks = [
-            process_with_semaphore(count,name, url)
-            for count,name, url in items_to_process
-        ]
-
-        start_time = time.time()
-
-        # 使用 gather 替代 as_completed，更好的错误处理
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 检查是否有未捕获的异常
-        for idx, result in enumerate(results):
-            if isinstance(result, Exception):
-                self._logger.error(f"任务 {idx} 发生未捕获异常: {result}")
-
-        elapsed = time.time() - start_time
-        self._logger.info(
-            f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接,耗时: {elapsed:.1f}s"
-        )
-
         self.save()
         save_as_txt(self.pan_baidu_path)
 
     async def process_single(
-        self, count, total, name, article_url, retry_count=0, max_retries=3
+            self, count, total, name, article_url, retry_count=0, max_retries=3
     ):
         """处理单个链接（改进版本，确保资源清理）"""
         all_download_urls = []
@@ -510,7 +512,7 @@ class MhzxDownloader(DownloaderAsync):
                                 popup_url = decoded_url
                         except Exception as e:
                             self._logger.warning(
-                                f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}"
+                                f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮二维码解码失败: {e}", exc_info=True
                             )
 
                     all_download_urls.append(popup_url)
@@ -520,7 +522,7 @@ class MhzxDownloader(DownloaderAsync):
 
                 except Exception as e:
                     self._logger.warning(
-                        f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}"
+                        f"[{count}/{total}] {name}: 第 {btn_index + 1} 个按钮点击失败: {e}", exc_info=True
                     )
                     continue
 
@@ -540,9 +542,9 @@ class MhzxDownloader(DownloaderAsync):
 
                         # 如果是百度网盘链接，添加密码
                         if (
-                            "pan.baidu.com" in download_url
-                            and "?pwd=" not in download_url
-                            and download_pwd
+                                "pan.baidu.com" in download_url
+                                and "?pwd=" not in download_url
+                                and download_pwd
                         ):
                             download_url = f"{download_url}?pwd={download_pwd}"
 
@@ -571,47 +573,70 @@ class MhzxDownloader(DownloaderAsync):
 
 
 class MhzxSpider(DownloaderAsync):
-    _logger = logging.getLogger("MhzxSpider")
+    _logger = Log("MhzxSpider").log()
 
     def __init__(
-        self,
-        headless=True,
-        articles_path="articles.json",
-        article_url=None,
-        keyword = None,
+            self,
+            headless=True,
+            articles_path="articles.json",
+            article_url=None,
+            keyword=None,
     ):
         super().__init__(
             headless=headless,
         )
         self.articles_path = articles_path
         self.article_url = article_url
-        self.keyword=keyword
+        self.keyword = keyword
 
         self.list = []
 
     async def produce(self):
-
         page = await self.context.new_page()
         page.set_default_timeout(30000)
 
         # 带重试的导航
         await page.goto(self.article_url, wait_until="domcontentloaded")
 
-        await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
-        article_xpath = f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
-        article_locators = await page.locator(article_xpath).all()
-        for i, locator in enumerate(article_locators):
-            name = await locator.text_content()
-            name = name.strip()
-            url = await locator.get_attribute("href")
+        try:
+            await page.wait_for_selector("//div[1]/article/div/h3/a", timeout=20000)
+            article_xpath = f"//div[1]/article/div/h3/a[contains(text(),{self.keyword})]"
+            article_locators = await page.locator(article_xpath).all()
+            for i, locator in enumerate(article_locators):
+                name = await locator.text_content()
+                name = name.strip()
+                url = await locator.get_attribute("href")
 
-            self.list.append(
-                {
-                    "name": name,
-                    "url": url,
-                }
-            )
-        with open(self.articles_path, "w", encoding="utf-8") as f:
-            json.dump(self.list, f, ensure_ascii=False, indent=2)
-        
-        await self.safe_close_page(page)
+                self.list.append(
+                    {
+                        "name": name,
+                        "url": url,
+                    }
+                )
+            with open(self.articles_path, "w", encoding="utf-8") as f:
+                json.dump(self.list, f, ensure_ascii=False, indent=2)
+
+            await self.safe_close_page(page)
+        except Exception as e:
+            self._logger.warning("发生未知错误: {e}", exc_info=True)
+
+
+def save_as_txt(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    url_list = []
+    extract_pwd = set()
+    url_path = temp_dir + r"\pan_baidu.txt"
+    pwd_path = r"E:\BaiduNetdiskDownload\password.txt"
+
+    for i in data:
+        url_list.append(i["download_url"])
+        extract_pwd.add(i["extract_pwd"])
+        if url_list:
+            with open(url_path, "w", encoding="utf-8") as f:
+                for url in url_list:
+                    f.write(url + "\n")
+            with open(pwd_path, "w", encoding="utf-8") as f:
+                for pwd in extract_pwd:
+                    f.write(pwd + "\n")
