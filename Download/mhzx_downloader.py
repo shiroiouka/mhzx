@@ -434,14 +434,12 @@ class MhzxDownloader(DownloaderAsync):
 
         try:
             page = await self.context.new_page()
-
-            # 带重试的导航
             await page.goto(article_url, wait_until="domcontentloaded")
 
             # 第一次点击
             try:
                 async with page.expect_popup(timeout=40000) as popup_info:
-                    download_selector = "span:has-text('下载')"
+                    download_selector = "span.poi-icon__text:has-text('下载')"
                     await page.click(download_selector)
                 new_page = await popup_info.value
                 await new_page.wait_for_load_state("domcontentloaded")
@@ -464,9 +462,8 @@ class MhzxDownloader(DownloaderAsync):
             page = new_page
 
             # 获取密码信息
-            download_pwd_selector = "div.inn-download-page__content__item__download-pwd"
-            extract_pwd_selector = "div.inn-download-page__content__item__extract-pwd"
-
+            download_pwd_selector = "div.inn-download-page__content__item__download-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
+            extract_pwd_selector = "div.inn-download-page__content__item__extract-pwd > div > div.poi-g_lg-9-10.poi-g_7-10 > div > input"
 
             try:
                 download_pwd_input = await page.wait_for_selector(
@@ -487,7 +484,7 @@ class MhzxDownloader(DownloaderAsync):
                 pass
 
             # 查找所有下载按钮
-            download_buttons_selector = "span:has-text('下载')"
+            download_buttons_selector = "span.poi-icon__text:has-text('下载')"
             download_buttons = await page.locator(download_buttons_selector).all()
 
             # 遍历并点击所有下载按钮
@@ -581,39 +578,47 @@ class MhzxSpider(DownloaderAsync):
         headless=True,
         articles_path="articles.json",
         keyword=None,
+        pages_count=5,
     ):
         super().__init__(
             headless=headless,
         )
         self.articles_path = articles_path
         self.keyword = keyword
-
+        self.pages_count = pages_count
         self.list = []
 
     async def produce(self):
         page = await self.context.new_page()
 
-        # 带重试的导航
-        url = r"https://www.mhh1.com/"
-        await page.goto(url, wait_until="domcontentloaded")
-        try:
+        page_num = 0
+        article_selector = 'article > div > h3 > a'
+        next_page_selector = "a[title*='下一页']"
+
+        if self.keyword == "game":
+            url = r"https://www.mhh1.com/bbs/game"
+        elif self.keyword == "3D":
+            url = r"https://www.mhh1.com/bbs/sex/2-5d3d-tv"
+        elif not self.keyword:
+            url = r"https://www.mhh1.com/bbs/sex/2dr18-trdh"
+        else:
+            url = r"https://www.mhh1.com/"
             search_selector = "a[title*='经典搜索']"
             await page.click(search_selector)
             input_xpath = r"xpath=//html/body/div[14]/div/div[2]/div/form/input[1]"
             await page.fill(input_xpath, self.keyword)
             await page.press(input_xpath, "Enter")
             article_selector = f'a[title*="{self.keyword}"]'
-            next_page_selector = "a[title*='下一页']"
-            page_num = 0
-
-            while page_num<5:
+        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            while page_num < self.pages_count:
                 page_num += 1
                 # 等待当前页文章加载
                 await page.wait_for_selector(article_selector, timeout=10000)
 
                 # 获取当前页文章
                 articles = await page.locator(article_selector).all()
-                art_list=[]
+                art_list = []
                 for article in articles:
                     name = (await article.text_content() or "").strip()
                     url = await article.get_attribute("href")
@@ -647,6 +652,8 @@ class MhzxSpider(DownloaderAsync):
             await self.safe_close_page(page)
         except Exception as e:
             self._logger.warning("发生未知错误: {e}", exc_info=True)
+
+
 
 
 def save_as_txt(path):
