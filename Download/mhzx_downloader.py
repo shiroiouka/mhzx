@@ -8,7 +8,7 @@ import cv2
 from numpy import frombuffer, uint8, random
 from playwright.async_api import async_playwright, ViewportSize
 
-temp_dir = os.path.join(os.path.dirname(__file__), "temp")
+temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
 if not os.path.exists(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
 
