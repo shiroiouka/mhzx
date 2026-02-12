@@ -2,14 +2,11 @@ import asyncio
 import json
 import logging
 import os
-import time
 from functools import wraps
-from typing import Optional
 
-import aiohttp
 import cv2
-import numpy as np
-from playwright.async_api import async_playwright, ViewportSize, Page
+from numpy import frombuffer, uint8, random
+from playwright.async_api import async_playwright, ViewportSize
 
 temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
 if not os.path.exists(temp_dir):
@@ -37,7 +34,7 @@ def async_retry(
                     if attempt < max_retries - 1:
                         delay = min(base_delay * (2**attempt), max_delay)
                         jitter = delay * 0.1
-                        actual_delay = delay + np.random.uniform(-jitter, jitter)
+                        actual_delay = delay + random.uniform(-jitter, jitter)
 
                         await asyncio.sleep(actual_delay)
                     else:
@@ -159,7 +156,7 @@ class DownloaderAsync:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
 
-    async def safe_close_page(self, page: Optional[Page]):
+    async def safe_close_page(self, page):
         """安全关闭页面"""
         if page and not page.is_closed():
             try:
@@ -195,14 +192,14 @@ class DownloaderAsync:
                     return True
         return False
 
-    async def decode_qr_async(self, image_url: str) -> Optional[str]:
+    async def decode_qr_async(self, image_url: str):
         """异步二维码解码"""
 
-        def _process_qr_image(img_data: bytes) -> Optional[str]:
+        def _process_qr_image(img_data: bytes):
             """处理二维码图像"""
             try:
                 # 解码图片
-                img = cv2.imdecode(np.frombuffer(img_data, np.uint8), -1)
+                img = cv2.imdecode(frombuffer(img_data, uint8), -1)
 
                 if img is None:
                     self._logger.warning(f"无法解码图片: {image_url}")
@@ -244,15 +241,10 @@ class DownloaderAsync:
                 return None
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as response:
-                    if response.status != 200:
-                        self._logger.warning(
-                            f"下载失败: {image_url}, 状态码: {response.status}"
-                        )
-                        return None
-
-                    img_data = await response.read()
+            response = await self.context.request.get(image_url)
+            if response.status != 200:
+                return None
+            img_data = await response.read()
 
             # 在同步代码中处理图像（避免阻塞事件循环）
             loop = asyncio.get_event_loop()
@@ -405,8 +397,6 @@ class MhzxDownloader(DownloaderAsync):
                 for count, name, url in items_to_process
             ]
 
-            start_time = time.time()
-
             # 使用 gather 替代 as_completed，更好的错误处理
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -415,9 +405,8 @@ class MhzxDownloader(DownloaderAsync):
                 if isinstance(result, Exception):
                     self._logger.error(f"任务 {idx} 发生未捕获异常: {result}")
 
-            elapsed = time.time() - start_time
             self._logger.info(
-                f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接,耗时: {elapsed:.1f}s"
+                f"处理完成,共处理 {len(tasks)} 个文章 {len(self.links)} 个下载链接"
             )
         else:
             self._logger.info("所有链接都已处理过,无需处理新链接")
@@ -594,7 +583,7 @@ class MhzxSpider(DownloaderAsync):
         page.set_default_timeout(60000)
 
         page_num = 0
-        article_selector = 'article > div > h3 > a'
+        article_selector = "article > div > h3 > a"
         next_page_selector = "a[title*='下一页']"
 
         if self.keyword == "game":
@@ -656,8 +645,6 @@ class MhzxSpider(DownloaderAsync):
             self._logger.warning("发生未知错误: {e}", exc_info=True)
 
 
-
-
 def save_as_txt(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -670,12 +657,12 @@ def save_as_txt(path):
     for i in data:
         url_list.append(i["download_url"])
         extract_pwd.add(i["extract_pwd"])
-        if url_list:
-            with open(url_path, "w", encoding="utf-8") as f:
-                for url in url_list:
-                    f.write(url + "\n")
-        if extract_pwd:
-            with open(pwd_path, "w", encoding="utf-8") as f:
-                for pwd in extract_pwd:
-                    if pwd:
-                        f.write(pwd + "\n")
+    if url_list:
+        with open(url_path, "w", encoding="utf-8") as f:
+            for url in url_list:
+                f.write(url + "\n")
+    if extract_pwd:
+        with open(pwd_path, "w", encoding="utf-8") as f:
+            for pwd in extract_pwd:
+                if pwd:
+                    f.write(pwd + "\n")
