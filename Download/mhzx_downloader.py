@@ -434,6 +434,7 @@ class MhzxDownloader(DownloaderAsync):
 
         try:
             page = await self.context.new_page()
+            page.set_default_timeout(60000)
             await page.goto(article_url, wait_until="domcontentloaded")
 
             # 第一次点击
@@ -590,6 +591,7 @@ class MhzxSpider(DownloaderAsync):
 
     async def produce(self):
         page = await self.context.new_page()
+        page.set_default_timeout(60000)
 
         page_num = 0
         article_selector = 'article > div > h3 > a'
