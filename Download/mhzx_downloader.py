@@ -241,10 +241,14 @@ class DownloaderAsync:
                 return None
 
         try:
+            # 修复：使用 context.request.get 获取响应，然后使用 body() 而不是 read()
             response = await self.context.request.get(image_url)
             if response.status != 200:
+                self._logger.warning(f"图片下载失败，状态码: {response.status} - {image_url}")
                 return None
-            img_data = await response.read()
+
+            # 修复：APIResponse 使用 body() 方法获取内容
+            img_data = await response.body()
 
             # 在同步代码中处理图像（避免阻塞事件循环）
             loop = asyncio.get_event_loop()
