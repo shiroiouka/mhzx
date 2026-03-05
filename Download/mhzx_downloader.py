@@ -13,39 +13,6 @@ if not os.path.exists(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
 
 
-def async_retry(
-    max_retries=3,
-    base_delay=1.0,
-    max_delay=10.0,
-    exceptions=(asyncio.TimeoutError, Exception),
-):
-    """异步重试装饰器"""
-
-    def decorator(func):
-
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        delay = min(base_delay * (2**attempt), max_delay)
-                        jitter = delay * 0.1
-                        actual_delay = delay + random.uniform(-jitter, jitter)
-
-                        await asyncio.sleep(actual_delay)
-                    else:
-                        raise last_exception
-            raise last_exception
-
-        return wrapper
-
-    return decorator
-
-
 class Log:
     def __init__(self, name="logger", is_log=False):
 
@@ -244,7 +211,9 @@ class DownloaderAsync:
             # 修复：使用 context.request.get 获取响应，然后使用 body() 而不是 read()
             response = await self.context.request.get(image_url)
             if response.status != 200:
-                self._logger.warning(f"图片下载失败，状态码: {response.status} - {image_url}")
+                self._logger.warning(
+                    f"图片下载失败，状态码: {response.status} - {image_url}"
+                )
                 return None
 
             # 修复：APIResponse 使用 body() 方法获取内容
@@ -302,7 +271,7 @@ class MhzxDownloader(DownloaderAsync):
         self,
         headless=True,
         max_concurrent=3,
-        articles_path="articles.json",
+        articles_load_path="articles.json",
         pan_baidu_path=os.path.join(temp_dir, "pan_baidu.json"),
         no_pan_baidu_path=os.path.join(temp_dir, "no_pan_baidu.json"),
     ):
@@ -310,7 +279,7 @@ class MhzxDownloader(DownloaderAsync):
             headless=headless,
         )
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.articles_path = articles_path
+        self.articles_load_path = articles_load_path
         self.pan_baidu_path = pan_baidu_path
         self.no_pan_baidu_path = no_pan_baidu_path
 
@@ -359,7 +328,7 @@ class MhzxDownloader(DownloaderAsync):
             self._logger.warning("没有新的链接保存")
 
     async def produce(self):
-        with open(self.articles_path, "r", encoding="utf-8") as f:
+        with open(self.articles_load_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         total = len(data)
 
@@ -371,7 +340,7 @@ class MhzxDownloader(DownloaderAsync):
         items_to_process = []
         count = 0
         for item in data:
-            name = item.get("name", "")
+            name = item.get("name", "项目{count}")
             url = item.get("url", "")
             if name in pan_baidu_names or name in no_pan_baidu_names:
                 continue
@@ -570,14 +539,14 @@ class MhzxSpider(DownloaderAsync):
     def __init__(
         self,
         headless=True,
-        articles_path="articles.json",
+        articles_save_path="articles.json",
         keyword=None,
         pages_count=5,
     ):
         super().__init__(
             headless=headless,
         )
-        self.articles_path = articles_path
+        self.articles_save_path = articles_save_path
         self.keyword = keyword
         self.pages_count = pages_count
         self.list = []
@@ -594,7 +563,7 @@ class MhzxSpider(DownloaderAsync):
             url = r"https://www.mhh1.com/bbs/game"
         elif self.keyword == "3D":
             url = r"https://www.mhh1.com/bbs/sex/2-5d3d-tv"
-        elif not self.keyword:
+        elif self.keyword == "2D" or not self.keyword:
             url = r"https://www.mhh1.com/bbs/sex/2dr18-trdh"
         else:
             url = r"https://www.mhh1.com/"
@@ -639,9 +608,9 @@ class MhzxSpider(DownloaderAsync):
                 # 等待新内容加载
                 await page.wait_for_timeout(2000)  # 简单等待
 
-            self._logger.info(f"翻页完成，共 {page_num} 页，{len(self.list)} 个文章")
+            self._logger.info(f"操作完成，共 {page_num} 页，{len(self.list)} 个文章")
 
-            with open(self.articles_path, "w", encoding="utf-8") as f:
+            with open(self.articles_save_path, "w", encoding="utf-8") as f:
                 json.dump(self.list, f, ensure_ascii=False, indent=2)
 
             await self.safe_close_page(page)
